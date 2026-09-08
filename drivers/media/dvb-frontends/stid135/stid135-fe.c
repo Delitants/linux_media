@@ -70,6 +70,8 @@ struct stv_base {
 	struct i2c_adapter  *i2c;
 	struct mutex         status_lock;
 	int                  count;
+	unsigned int         rf_users[4];
+	bool                 rf_ready[4];
 	u32                  extclk;
 	u8                   ts_mode;
 
@@ -99,6 +101,7 @@ struct stv {
 	struct dvb_frontend  fe;
 	int                  nr;
 	int                  rf_in;
+	bool                 rf_active;
 	unsigned long        stats_time;
 	struct fe_sat_signal_info signal_info;
     STCHIP_Handle_t vglna_handle;
@@ -276,6 +279,33 @@ static int stid135_probe(struct stv *state)
 	return err != FE_LLA_NO_ERROR ? -1 : 0;
 }
 
+/* RF readiness and frontend ownership are protected by status_lock. */
+static fe_lla_error_t stid135_rf_standby(struct stv *state)
+{
+	struct fe_stid135_internal_param *p_params = state->base->handle;
+	fe_lla_error_t err;
+
+	/* A failed standby may have powered down part of the RF path. */
+	state->base->rf_ready[state->rf_in] = false;
+	err = FE_STiD135_TunerStandby(p_params->handle_demod, state->rf_in + 1, 0);
+	if (err != FE_LLA_NO_ERROR)
+		dev_warn(&state->base->i2c->dev, "%s: STiD135 standby tuner %d failed!\n", __func__, state->rf_in);
+
+	return err;
+}
+
+static fe_lla_error_t stid135_rf_put(struct stv *state)
+{
+	if (!state->rf_active)
+		return FE_LLA_NO_ERROR;
+
+	state->rf_active = false;
+	if (--state->base->rf_users[state->rf_in] || state->base->set_voltage)
+		return FE_LLA_NO_ERROR;
+
+	return stid135_rf_standby(state);
+}
+
 static int stid135_init(struct dvb_frontend *fe)
 {
 	struct stv *state = fe->demodulator_priv;
@@ -288,9 +318,30 @@ static int stid135_init(struct dvb_frontend *fe)
 	dev_dbg(&state->base->i2c->dev, "%s: demod %d + tuner %d\n", __func__, state->nr, state->rf_in);
 
 	mutex_lock(&state->base->status_lock);
-	err |= fe_stid135_tuner_enable(p_params->handle_demod, state->rf_in + 1);
-	err |= fe_stid135_diseqc_init(state->base->handle, state->rf_in + 1, FE_SAT_DISEQC_2_3_PWM);
-	err |= fe_stid135_set_rfmux_path(p_params->handle_demod, state->nr + 1, state->rf_in + 1);
+	if (!state->base->rf_ready[state->rf_in]) {
+		err = fe_stid135_tuner_enable(p_params->handle_demod, state->rf_in + 1);
+		if (err != FE_LLA_NO_ERROR)
+			goto fail;
+		err = fe_stid135_diseqc_init(state->base->handle, state->rf_in + 1, FE_SAT_DISEQC_2_3_PWM);
+		if (err != FE_LLA_NO_ERROR)
+			goto fail;
+		state->base->rf_ready[state->rf_in] = true;
+	}
+	err = fe_stid135_set_rfmux_path(p_params->handle_demod, state->nr + 1, state->rf_in + 1);
+	if (err != FE_LLA_NO_ERROR)
+		goto fail;
+	/* init can repeat without sleep, including when powerdown is disabled. */
+	if (!state->rf_active) {
+		state->base->rf_users[state->rf_in]++;
+		state->rf_active = true;
+	}
+	goto unlock;
+
+fail:
+	/* Never power down an RF still owned by this frontend or a sibling. */
+	if (!state->base->rf_users[state->rf_in])
+		stid135_rf_standby(state);
+unlock:
 	mutex_unlock(&state->base->status_lock);
     
 	if (err != FE_LLA_NO_ERROR)
@@ -302,11 +353,14 @@ static int stid135_init(struct dvb_frontend *fe)
 static void stid135_release(struct dvb_frontend *fe)
 {
 	struct stv *state = fe->demodulator_priv;
-    int i;
+	int i, count;
 
 	dev_dbg(&state->base->i2c->dev, "%s: demod %d\n", __func__, state->nr);
-	state->base->count--;
-	if (state->base->count == 0) {
+	mutex_lock(&state->base->status_lock);
+	stid135_rf_put(state);
+	count = --state->base->count;
+	mutex_unlock(&state->base->status_lock);
+	if (count == 0) {
 		for(i = 0; i < 4; i++)
 			if (state->base->vglna_handle[i])
 				stvvglna_term(state->base->vglna_handle[i]);
@@ -899,17 +953,15 @@ static int stid135_sleep(struct dvb_frontend *fe)
 {
 	struct stv *state = fe->demodulator_priv;
 	fe_lla_error_t err = FE_LLA_NO_ERROR;
-	struct fe_stid135_internal_param *p_params = state->base->handle;;
 
-	if (state->base->mode == 0 || state->base->set_voltage)
+	if (state->base->mode == 0)
 		return 0;
 
 	dev_dbg(&state->base->i2c->dev, "%s: tuner %d\n", __func__, state->rf_in);
 
-	err = FE_STiD135_TunerStandby(p_params->handle_demod, state->rf_in + 1, 0);
-
-	if (err != FE_LLA_NO_ERROR)
-		dev_warn(&state->base->i2c->dev, "%s: STiD135 standby tuner %d failed!\n", __func__, state->rf_in);
+	mutex_lock(&state->base->status_lock);
+	err = stid135_rf_put(state);
+	mutex_unlock(&state->base->status_lock);
 
 	return err != FE_LLA_NO_ERROR ? -1 : 0;
 }
