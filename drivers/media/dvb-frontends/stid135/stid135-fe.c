@@ -318,6 +318,8 @@ static int stid135_init(struct dvb_frontend *fe)
 	dev_dbg(&state->base->i2c->dev, "%s: demod %d + tuner %d\n", __func__, state->nr, state->rf_in);
 
 	mutex_lock(&state->base->status_lock);
+	/* A ready RF skips enable's implicit clearing of the chip error. */
+	ChipResetError(p_params->handle_demod);
 	if (!state->base->rf_ready[state->rf_in]) {
 		err = fe_stid135_tuner_enable(p_params->handle_demod, state->rf_in + 1);
 		if (err != FE_LLA_NO_ERROR)

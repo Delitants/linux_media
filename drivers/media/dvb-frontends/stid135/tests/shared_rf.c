@@ -99,6 +99,7 @@ static void fake_wait(unsigned int milliseconds);
 #include "shared-rf-source.h"
 
 u32 C8CODEW_TOP_CTRL[1];
+u32 C8CODEW_RFMUX[1];
 
 enum operation { ENABLE, DISEQC, MUX, STANDBY, OPERATIONS };
 struct hardware {
@@ -110,6 +111,7 @@ struct hardware {
 	int calls[OPERATIONS][4];
 	int fail[OPERATIONS];
 	int resets[4], routes[8], waits, terminations, frees;
+	int mux_reads[8], mux_writes[8];
 	bool powered[4], probing, freed_base;
 	pthread_mutex_t gate;
 	pthread_cond_t changed;
@@ -151,6 +153,9 @@ static fe_lla_error_t record(enum operation op, FE_OXFORD_TunerPath_t tuner)
 STCHIP_Error_t Oxford_EnableLO(STCHIP_Handle_t chip, FE_OXFORD_TunerPath_t tuner)
 {
 	CHECK(chip == &hw.chip);
+	check_locked();
+	/* Oxford_EnableLO calls ChipSetOneRegister, which clears the latch. */
+	chip->Error = CHIPERR_NO_ERROR;
 	fe_lla_error_t err = record(ENABLE, tuner);
 	if (hw.pause_enable) {
 		CHECK(pthread_mutex_lock(&hw.gate) == 0);
@@ -191,22 +196,51 @@ STCHIP_Error_t Oxford_SetVGLNAgainMode(STCHIP_Handle_t chip,
 STCHIP_Error_t Oxford_TunerDisable(STCHIP_Handle_t chip, FE_OXFORD_TunerPath_t tuner)
 {
 	CHECK(chip == &hw.chip);
+	check_locked();
+	chip->Error = CHIPERR_NO_ERROR;
 	fe_lla_error_t err = record(STANDBY, tuner);
 	/* An I2C failure can occur after some powerdown writes succeeded. */
 	hw.powered[rf_index(tuner)] = false;
 	return (STCHIP_Error_t)err;
 }
 
-STCHIP_Error_t ChipSetField(STCHIP_Handle_t chip, u32 field, s32 value)
+STCHIP_Error_t ChipGetOneRegister(STCHIP_Handle_t chip, u16 reg, u32 *value)
 {
 	check_locked();
 	CHECK(chip == &hw.chip);
-	CHECK(field == FLD_FC8CODEW_C8CODEW_TOP_CTRL_TOP_STOPCLK_STOP_CKTUNER);
-	CHECK(value == 0 || value == 1 || value == 2 || value == 4 || value == 8);
-	for (int rf = 0; rf < 4; rf++)
-		if (value & (1 << rf))
-			hw.resets[rf]++;
+	/* Match chip.c's register-access reset; ChipSetField's gate is real. */
+	chip->Error = CHIPERR_NO_ERROR;
+	*value = 0;
+	if (reg != REG_RC8CODEW_C8CODEW_TOP_CTRL_TOP_STOPCLK) {
+		int demod = reg - REG_RC8CODEW_C8CODEW_RFMUX_RFMUX0;
+		CHECK(demod >= 0 && demod < 8);
+		hw.mux_reads[demod]++;
+		if (hw.routes[demod])
+			*value = hw.routes[demod] - 1;
+	}
 	return CHIPERR_NO_ERROR;
+}
+
+STCHIP_Error_t ChipSetOneRegister(STCHIP_Handle_t chip, u16 reg, u32 value)
+{
+	check_locked();
+	CHECK(chip == &hw.chip);
+	chip->Error = CHIPERR_NO_ERROR;
+	if (reg == REG_RC8CODEW_C8CODEW_TOP_CTRL_TOP_STOPCLK) {
+		CHECK(value == 0 || value == 1 || value == 2 || value == 4 || value == 8);
+		for (int rf = 0; rf < 4; rf++)
+			if (value & (1 << rf))
+				hw.resets[rf]++;
+	} else {
+		int demod = reg - REG_RC8CODEW_C8CODEW_RFMUX_RFMUX0;
+		CHECK(demod >= 0 && demod < 8 && value < 4);
+		hw.mux_writes[demod]++;
+		if (record(MUX, value + 1) != FE_LLA_NO_ERROR)
+			chip->Error = CHIPERR_I2C_NO_ACK;
+		else
+			hw.routes[demod] = value + 1;
+	}
+	return chip->Error;
 }
 
 static void fake_wait(unsigned int milliseconds)
@@ -222,17 +256,6 @@ fe_lla_error_t fe_stid135_diseqc_init(fe_stid135_handle_t handle,
 	CHECK(handle == &hw.params);
 	CHECK(txmode == FE_SAT_DISEQC_2_3_PWM || txmode == FE_SAT_22KHZ_Continues);
 	return record(DISEQC, tuner);
-}
-
-fe_lla_error_t fe_stid135_set_rfmux_path(stchip_handle_t chip,
-		enum fe_stid135_demod demod, FE_OXFORD_TunerPath_t tuner)
-{
-	CHECK(chip == &hw.chip);
-	CHECK(demod >= 1 && demod <= 8);
-	fe_lla_error_t err = record(MUX, tuner);
-	if (!err)
-		hw.routes[demod - 1] = tuner;
-	return err;
 }
 
 fe_lla_error_t fe_stid135_set_22khz_cont(fe_stid135_handle_t handle,
@@ -440,9 +463,15 @@ static void sibling_failure(void)
 	CHECK(stid135_init(a) == 0);
 	hw.fail[MUX] = 1;
 	CHECK(stid135_init(b) != 0);
+	CHECK(hw.chip.Error == CHIPERR_I2C_NO_ACK);
+	CHECK(hw.mux_reads[1] == 1 && hw.mux_writes[1] == 1);
 	CHECK(hw.resets[0] == 1 && hw.calls[STANDBY][0] == 0 && hw.powered[0]);
 	CHECK(stid135_sleep(b) == 0 && hw.calls[STANDBY][0] == 0);
-	CHECK(stid135_init(b) == 0 && hw.resets[0] == 1);
+	int result = stid135_init(b);
+	CHECK(hw.mux_reads[1] == 2 && hw.mux_writes[1] == 2);
+	CHECK(result == 0 && hw.chip.Error == CHIPERR_NO_ERROR && hw.routes[1] == 1);
+	CHECK(hw.resets[0] == 1 && hw.calls[ENABLE][0] == 1);
+	CHECK(hw.calls[DISEQC][0] == 1 && hw.calls[STANDBY][0] == 0);
 	CHECK(stid135_sleep(a) == 0 && hw.calls[STANDBY][0] == 0);
 	CHECK(stid135_sleep(b) == 0 && hw.calls[STANDBY][0] == 1);
 }
@@ -451,10 +480,18 @@ static void duplicate_failure(void)
 {
 	struct dvb_frontend *a = attach(0, 0, false);
 	CHECK(stid135_init(a) == 0);
-	hw.fail[MUX] = 1;
+	hw.fail[MUX] = 2;
 	CHECK(stid135_init(a) != 0);
+	CHECK(hw.chip.Error == CHIPERR_I2C_NO_ACK);
+	CHECK(hw.mux_reads[0] == 2 && hw.mux_writes[0] == 2);
 	CHECK(hw.resets[0] == 1 && hw.calls[STANDBY][0] == 0 && hw.powered[0]);
-	CHECK(stid135_init(a) == 0);
+	int result = stid135_init(a);
+	CHECK(hw.mux_reads[0] == 3 && hw.mux_writes[0] == 3);
+	CHECK(result != 0 && hw.chip.Error == CHIPERR_I2C_NO_ACK);
+	CHECK(stid135_init(a) == 0 && hw.chip.Error == CHIPERR_NO_ERROR);
+	CHECK(hw.mux_reads[0] == 4 && hw.mux_writes[0] == 4);
+	CHECK(hw.resets[0] == 1 && hw.calls[ENABLE][0] == 1);
+	CHECK(hw.calls[DISEQC][0] == 1 && hw.calls[STANDBY][0] == 0);
 	CHECK(stid135_sleep(a) == 0 && hw.calls[STANDBY][0] == 1);
 }
 

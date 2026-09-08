@@ -53,6 +53,7 @@ def structure(source, name):
 def extract(source_dir):
     frontend = (source_dir / "stid135-fe.c").read_text()
     lowlevel = (source_dir / "stid135_drv.c").read_text()
+    chip = (source_dir / "chip.c").read_text()
     roots = ["stid135_probe", "stid135_init", "stid135_sleep", "stid135_release",
              "stid135_attach", "match_base", "stid135_set_voltage", "stid135_set_tone"]
     functions = {}
@@ -65,8 +66,12 @@ def extract(source_dir):
         functions[name] = body
         # New lifecycle helpers must be compiled too, never replaced by stubs.
         pending.extend(re.findall(r"\b(stid135_\w+)\s*\(", code_mask(body)))
-    for name in ("fe_stid135_tuner_enable", "FE_STiD135_TunerStandby"):
+    for name in ("fe_stid135_tuner_enable", "FE_STiD135_TunerStandby",
+                 "fe_stid135_set_rfmux_path"):
         functions[name] = function(lowlevel, name)
+    for name in ("ChipSetField", "ChipResetError", "ChipGetFieldMask",
+                 "ChipGetFieldSign", "ChipGetFieldPosition", "ChipGetFieldBits"):
+        functions[name] = function(chip, name)
     structs = [structure(frontend, "stv_base"), structure(frontend, "stv"),
                structure((source_dir / "stid135.h").read_text(), "stid135_cfg")]
     prototypes = [body[:body.index("{")].rstrip() + ";"

@@ -36,18 +36,25 @@ This avoids conflicting typedefs without suppressing compiler diagnostics.
 
 The runner extracts the actual `stid135_init`, `stid135_sleep`,
 `stid135_release`, probe/attach/RF-selection callbacks, their local helpers,
-and both low-level tuner enable/standby bodies. It compiles the real
+and the low-level tuner enable/standby and mux bodies. It also extracts
+`ChipSetField`, its field helpers and `ChipResetError` from `chip.c`, retaining
+the real software-error latch and I/O gate. It compiles the real
 `stv_base`, `stv`, configuration and LLA structures; the latter come from
 the unmodified driver headers. Missing or ambiguous definitions fail
 extraction, and unresolved dependencies fail compilation. Callback logic is
 not copied into the test or tested by checking source text.
 
-Kernel interfaces, LLA probe setup, DiSEqC/mux operations and Oxford chip I/O
+Kernel interfaces, LLA probe setup, DiSEqC operations and register/Oxford I/O
 are replaced with checked stubs. The actual enable body performs the clock
 reset writes and 10/100 ms waits against fake hardware. The standby fake
 models a partial powerdown even when it reports an I/O error. Runtime I/O
 requires the owning thread to hold the shared mutex; probe retains its
 existing, pre-publication initialization behavior.
+
+The register stubs mirror the register-access latch reset and latch a failed
+mux write. Sibling and duplicate init retries must perform fresh register
+reads/writes without extra enable, clock reset, DiSEqC setup or standby.
+Repeated failing I/O must still report failure, rather than hiding new errors.
 
 The 24 cases cover first use despite multiple attachments, duplicate init
 (including reopen without sleep), eight demods sharing one RF, four
@@ -73,6 +80,8 @@ Each case runs in a separate process with a deadlock timeout.
   standby. A later init must reinitialize. Failed init acquires no new owner
   and only attempts cleanup when the RF has no existing users.
 - All these transitions and runtime RF operations hold `status_lock`.
+  Init clears a prior software chip error even when a ready RF skips enable;
+  errors from the new I/O attempt still propagate normally.
   Multiswitch probe initialization and voltage/tone RF selection are unchanged.
 
 ## Limits
