@@ -1,5 +1,8 @@
 # STiD135 shared-RF regression tests
 
+For the patch explanation, source versions, kernel compilation, installation,
+activation checks, and rollback, see the [build/install guide](../BUILDING-SHARED-RF.md).
+
 Run from the source tree root with Python 3, a C11 compiler and pthreads:
 
 ```sh
