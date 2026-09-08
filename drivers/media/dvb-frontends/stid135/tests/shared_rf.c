@@ -85,11 +85,13 @@ static LIST_HEAD(stvlist);
 static void kfree(void *ptr);
 static void fake_wait(unsigned int milliseconds);
 
-/* The kernel's s64 is long long, including on LP64 userspace hosts. */
+/* The LLA headers require kernel-style 64-bit aliases on LP64 hosts too. */
 #define HOST_PC
 #define int64_t long long
+#define uint64_t unsigned long long
 #include "stid135_drv.h"
 #undef int64_t
+#undef uint64_t
 #undef calloc
 #undef free
 #undef WAIT_N_MS

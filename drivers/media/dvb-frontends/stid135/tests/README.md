@@ -20,6 +20,18 @@ The runner creates and removes a temporary build directory below `tests/`.
 Pass case names to select tests, or `--source-dir /path/to/stid135` to exercise
 another source version without changing the checkout containing the tests.
 
+To reproduce Linux LP64's `uint64_t = unsigned long` on an LP64 host that
+normally uses `unsigned long long`, run the same callbacks with this fixture:
+
+```sh
+CFLAGS='-include drivers/media/dvb-frontends/stid135/tests/lp64_stdint.h' \
+  python3 drivers/media/dvb-frontends/stid135/tests/shared_rf.py
+```
+
+The harness normalizes both signed and unsigned 64-bit aliases only while
+including the unmodified LLA headers, then restores the host type names.
+This avoids conflicting typedefs without suppressing compiler diagnostics.
+
 ## What executes
 
 The runner extracts the actual `stid135_init`, `stid135_sleep`,
