@@ -1,5 +1,10 @@
 # STiD135 shared-RF fix: build and installation guide
 
+**Historical procedure:** this reproduces the original May 2025-based fix at
+`78d2660`. The branch now includes newer upstream code. Use the
+[latest-stack guide](LATEST-STACK.md) for that upgrade; do not mix its newer
+DVB definitions with this old single-module/header recipe.
+
 This guide covers a **targeted replacement of `stid135.ko` on an existing,
 working TBS installation**. It does not install an entire media stack or
 upgrade Linux. Keep a recovery console and backups before changing drivers.
@@ -8,9 +13,9 @@ upgrade Linux. Keep a recovery console and backups before changing drivers.
 build/install steps.** The new file is for the next operator-approved boot.
 Loading a replacement while sibling adapters are active is not safe.
 
-## 1. Version: is this the latest driver?
+## 1. Version of this historical build
 
-No. This fix deliberately preserves the deployed source/header baseline.
+The original build was not latest. It preserved the deployed source/header baseline.
 The following upstream comparison was checked on **2026-09-08 UTC**:
 
 | Component | Revision | Meaning |
@@ -52,8 +57,9 @@ The fix changes `stid135-fe.c`, not the low-level tuner reset sequence:
    Track whether each frontend already owns a user reference.
 2. Keep normal tuner/DiSEqC initialization and reset on first use. Once ready,
    only route the new demodulator to the RF; do not reset its siblings' input.
-3. Make repeated init, sleep, and release idempotent. Sleeping or releasing one
-   frontend cannot power down an RF still owned by another frontend.
+3. Make repeated init, sleep, and RF ownership drops idempotent. The one-shot
+   release callback handles active or already-inactive ownership. Sleeping or
+   releasing one frontend cannot power down an RF still owned by another.
 4. Invalidate readiness whenever standby is attempted, even after partial
    failure. If a board callback suppresses standby, retain readiness because
    the hardware was not powered down. Failed init acquires no new ownership

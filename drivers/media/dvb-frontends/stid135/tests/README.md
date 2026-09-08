@@ -1,7 +1,8 @@
 # STiD135 shared-RF regression tests
 
 For the patch explanation, source versions, kernel compilation, installation,
-activation checks, and rollback, see the [build/install guide](../BUILDING-SHARED-RF.md).
+activation checks, and rollback, see the [latest-stack guide](../LATEST-STACK.md)
+and the [historical fix explanation](../BUILDING-SHARED-RF.md).
 
 Run from the source tree root with Python 3, a C11 compiler and pthreads:
 
@@ -61,8 +62,9 @@ Repeated failing I/O must still report failure, rather than hiding new errors.
 
 The 24 cases cover first use despite multiple attachments, duplicate init
 (including reopen without sleep), eight demods sharing one RF, four
-independent RFs, partial/final/repeated/inactive sleep and release, board
-callbacks that suppress powerdown, failure and retry at each init stage,
+independent RFs, partial/final/repeated/inactive sleep, one-shot release with
+active or inactive ownership, board callbacks that suppress powerdown,
+failure and retry at each init stage,
 failed standby/cleanup, surviving sibling ownership, and multiswitch/RF
 selection behavior. Three pthread cases hold the first callback in I/O
 until a second callback has actually encountered the busy shared mutex.

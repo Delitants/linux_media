@@ -2,10 +2,11 @@
 
 This fork's `fix/stid135-shared-rf-init` branch contains a targeted fix for
 reinitializing an RF input that other STiD135 demodulators are already using.
-It is based on the existing deployment's TBS driver revision, **not the latest
-complete TBS media stack**.
+It includes official TBS `latest` revision `2ce787de` (2026-07-24), merged
+without dropping the shared-RF fix. Upstream was checked on 2026-09-08 UTC.
 
-- [Build, installation, rollback, and technical explanation](drivers/media/dvb-frontends/stid135/BUILDING-SHARED-RF.md)
+- [Latest-stack build, installation, compatibility, and rollback](drivers/media/dvb-frontends/stid135/LATEST-STACK.md)
+- [Fix explanation and historical single-module build](drivers/media/dvb-frontends/stid135/BUILDING-SHARED-RF.md)
 - [Source-executing regression tests](drivers/media/dvb-frontends/stid135/tests/README.md)
 - [Official TBS source](https://github.com/tbsdtv/linux_media)
 - [Original upstream kernel README](README)
