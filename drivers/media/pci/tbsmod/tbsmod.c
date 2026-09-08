@@ -2273,23 +2273,56 @@ static void start_dma_transfer(struct mod_channel *pchannel)
 {
 	struct tbs_pcie_dev *dev=pchannel->dev;
 	u32 speedctrl;
-
+	u32 dmard_speedctrl;
+	u32 tmp0;
+	u32 empty_packet_size = 7;
+	u32 empty_packet_speed;
+	u32 packet_speed;
+	
 	/* PikoTV 20200306 */
+	TBS_PCIE_WRITE(Int_adapter, 0x04, 0x00000000);  // disable  interrupts.
 	if(pchannel->input_bitrate){
 		
 		// Kbit
 		if (pchannel->input_bitrate > PIKOTV_MBKB_THRESHOLD)
 		{
-			speedctrl = div_u64(1000000000ULL * BLOCKSIZE(dev->cardid), (pchannel->input_bitrate) * 1024);
+			if((dev->cardid == 0x6032)||(dev->cardid == 0x6001))
+				speedctrl = div_u64(1000000000ULL * CELLSIZE, (pchannel->input_bitrate) * 1024);
+			else
+				speedctrl = div_u64(1000000000ULL * BLOCKSIZE(dev->cardid), (pchannel->input_bitrate) * 1024);
+			dmard_speedctrl = div_u64(1000000000ULL * 128* (1<<FPGA_BLK), (pchannel->input_bitrate) * 1000);
+			pchannel->input_bitrate = pchannel->input_bitrate/1024;
 		}
 		else// Mbit
 		{
-			speedctrl = div_u64(1000000000ULL * BLOCKSIZE(dev->cardid), (pchannel->input_bitrate) * 1024*1024);
+			if((dev->cardid == 0x6032)||(dev->cardid == 0x6001))
+				speedctrl = div_u64(1000000000ULL * CELLSIZE, (pchannel->input_bitrate) * 1024*1024);
+			else
+				speedctrl = div_u64(1000000000ULL * BLOCKSIZE(dev->cardid), (pchannel->input_bitrate) * 1024*1024);
+			dmard_speedctrl = div_u64(1000000000ULL * 128* (1<<FPGA_BLK), (pchannel->input_bitrate) * 1000*1000);
 		}
 		
-		//printk("ioctl 0x20 speedctrl: %d \n", speedctrl);
+		if((dev->cardid == 0x6032)||(dev->cardid == 0x6001))
+		{
+			tmp0 = TBS_PCIE_READ((DMA_BASEADDRESS(dev->cardid, pchannel->channel_index)), 0x14);
+			tmp0 = div_u64(tmp0*188*8, 1000*1000);
+			printk("bitrate: %d \n", tmp0);
+			if(tmp0 > pchannel->input_bitrate + 3)
+				empty_packet_size = tmp0 - pchannel->input_bitrate -1;
+			else empty_packet_size = 2;
+			
+			printk("empty_packet_size: %d \n", empty_packet_size);
+			empty_packet_speed = div_u64(1000000000ULL * 188, empty_packet_size * 2 * 1000*1000);
+			
+			packet_speed = div_u64(1000000000ULL * 188, tmp0 * 2 * 1000*1000);//6001
+			TBS_PCIE_WRITE((DMA_BASEADDRESS(dev->cardid, pchannel->channel_index)), 0x60, (packet_speed));//6001
+			TBS_PCIE_WRITE((DMA_BASEADDRESS(dev->cardid, pchannel->channel_index)), DMARD_SPEED, (dmard_speedctrl));
+			TBS_PCIE_WRITE((DMA_BASEADDRESS(dev->cardid, pchannel->channel_index)), DMARD_SIZE, (FPGA_BLK));  //0 1 2 3
+			TBS_PCIE_WRITE((DMA_BASEADDRESS(dev->cardid, pchannel->channel_index)), EMPTY_PACKAGE_SPEED, (empty_packet_speed)); //2M
+		}
 		TBS_PCIE_WRITE((DMA_BASEADDRESS(dev->cardid, pchannel->channel_index)), DMA_SPEED_CTRL, (speedctrl));
 		TBS_PCIE_WRITE((DMA_BASEADDRESS(dev->cardid, pchannel->channel_index)), DMA_INT_MONITOR, (2*speedctrl));
+		
 		if(dev->cardid == 0x690b)
 		{
 			//speedctrl =div_u64(speedctrl,BLOCKCEEL );
@@ -2304,19 +2337,19 @@ static void start_dma_transfer(struct mod_channel *pchannel)
 		}
 
 	}
-	TBS_PCIE_WRITE((DMA_BASEADDRESS(dev->cardid, pchannel->channel_index)), DMA_SIZE, (BLOCKSIZE(dev->cardid)));
-	TBS_PCIE_WRITE((DMA_BASEADDRESS(dev->cardid, pchannel->channel_index)), DMA_ADDR_HIGH, 0);
-	TBS_PCIE_WRITE((DMA_BASEADDRESS(dev->cardid, pchannel->channel_index)), DMA_ADDR_LOW, pchannel->dmaphy);
+	//TBS_PCIE_WRITE((DMA_BASEADDRESS(dev->cardid, pchannel->channel_index)), DMA_SIZE, (BLOCKSIZE(dev->cardid)));
+	//TBS_PCIE_WRITE((DMA_BASEADDRESS(dev->cardid, pchannel->channel_index)), DMA_ADDR_HIGH, 0);
+	//TBS_PCIE_WRITE((DMA_BASEADDRESS(dev->cardid, pchannel->channel_index)), DMA_ADDR_LOW, pchannel->dmaphy);
 	TBS_PCIE_WRITE((DMA_BASEADDRESS(dev->cardid, pchannel->channel_index)), DMA_GO, (1));
 
-	//debug 
-	//tmp0 = TBS_PCIE_READ((DMA_BASEADDRESS(dev->cardid, pchannel->channel_index)), 0X20);
-	//printk("0x20: %x \n", tmp0);
+	tmp0 = TBS_PCIE_READ((DMA_BASEADDRESS(dev->cardid, pchannel->channel_index)), 0x2c);
+	if(tmp0 !=0)
+	{
+		//printk("dma_stop: %x \n", tmp0);
+		TBS_PCIE_WRITE((DMA_BASEADDRESS(dev->cardid, pchannel->channel_index)), DMA_GO, (1));
+	}
 
-	if(dev->cardid != 0x6032)
-		TBS_PCIE_WRITE(Int_adapter, 0x04, (0x00000001));
-
-	TBS_PCIE_WRITE(Int_adapter, 0x18+pchannel->channel_index*4, (1));
+	TBS_PCIE_WRITE(Int_adapter, 0x04, 0x00000001);  // enable int 	
 }
 
 static int tbsmod_open(struct inode *inode, struct file *filp)
@@ -2341,6 +2374,8 @@ static int tbsmod_open(struct inode *inode, struct file *filp)
 	printk("%s srate:%d\n", __func__, dev->srate);
 	*/
 	pchannel->dma_start_flag = 0;
+	pchannel->dma_num = 0;
+	
 	kfifo_reset(&pchannel->fifo);
 	spin_lock_init(&pchannel->adap_lock);
 	//enable rf 
@@ -2382,14 +2417,17 @@ static ssize_t tbsmod_write(struct file *file, const char __user *ptr, size_t si
 	struct mod_channel *pchannel = (struct mod_channel *)file->private_data;
 	int count;
 	int i = 0;
+	
+	if (pchannel->dma_start_flag == 0)
+	{
+		start_dma_transfer(pchannel);
+		pchannel->dma_start_flag = 1;
+	}
+		
 	count = kfifo_avail(&pchannel->fifo);
 	while (count < size)
 	{
-		if (pchannel->dma_start_flag == 0)
-		{
-			start_dma_transfer(pchannel);
-			pchannel->dma_start_flag = 1;
-		}
+
 		msleep(10);
 		count = kfifo_avail(&pchannel->fifo);
 		i++;
@@ -2419,6 +2457,16 @@ void spi_write(struct tbs_pcie_dev *dev, struct mcu24cxx_info *info)
 	TBS_PCIE_WRITE(info->bassaddr,info->reg,info->data);	
 	//printk("%s size:%x, reg: %x, val: %x\n", __func__, info->bassaddr, info->reg,info->data);
 }
+void spi_read32(struct tbs_pcie_dev *dev, struct mcu24cxx32_info *info)
+{
+	info->data = TBS_PCIE_READ(info->bassaddr, info->reg);
+	//printk("%s bassaddr:%x ,reg: %x,val: %x\n", __func__, info->bassaddr, info->reg,info->data);
+}
+void spi_write32(struct tbs_pcie_dev *dev, struct mcu24cxx32_info *info)
+{
+	TBS_PCIE_WRITE(info->bassaddr,info->reg,info->data);	
+	//printk("%s size:%x, reg: %x, val: %x\n", __func__, info->bassaddr, info->reg,info->data);
+}
 static long tbsmod_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 {
 	struct mod_channel *pchannel = (struct mod_channel *)file->private_data;
@@ -2428,6 +2476,7 @@ static long tbsmod_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 	//struct dtv_property *prop = NULL;
 	struct dtv_property prop;
 	struct mcu24cxx_info wrinfo;
+	struct mcu24cxx32_info wrinfo32;
 	int ret = 0;
 	struct dvb_modulator_parameters params;
 	struct dvb_frontend_info finfo;
@@ -2672,6 +2721,17 @@ static long tbsmod_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 		copy_from_user(&wrinfo , (const char*)arg, sizeof(struct mcu24cxx_info ));
 		spi_write(dev, &wrinfo);
 		break;
+		
+	case FE_24CXX_READ:
+		copy_from_user(&wrinfo32 , (const char*)arg, sizeof(struct mcu24cxx32_info ));
+		spi_read32(dev, &wrinfo32);
+		copy_to_user((void __user *)arg, &wrinfo32, sizeof(struct mcu24cxx32_info ));
+		break;
+	case FE_24CXX_WRITE:
+		copy_from_user(&wrinfo32 , (const char*)arg, sizeof(struct mcu24cxx32_info ));
+		spi_write32(dev, &wrinfo32);
+		break;
+
 
 	default:
 		ret = -EINVAL;
@@ -2693,8 +2753,9 @@ static int tbsmod_release(struct inode *inode, struct file *file)
 	u8 buff[4] = {0,0,0,0};
 	
 	//printk("%s\n", __func__);
+	TBS_PCIE_WRITE(Int_adapter, 0x04, 0);  // disable int 
 	TBS_PCIE_WRITE((DMA_BASEADDRESS(dev->cardid, pchannel->channel_index)), DMA_GO, (0));
-	TBS_PCIE_WRITE(Int_adapter, 0x18+pchannel->channel_index*4, (0));
+	//TBS_PCIE_WRITE(Int_adapter, 0x18+pchannel->channel_index*4, (0));
 	pchannel->dma_start_flag = 0;
 
 	//disable rf 
@@ -2715,6 +2776,7 @@ static int tbsmod_release(struct inode *inode, struct file *file)
 		ad9789_wt_nBytes(dev, 1, AD9789_CHANNEL_ENABLE, buff);
 
 	}
+	TBS_PCIE_WRITE(Int_adapter, 0x04, 0x00000001);  // enable int 
 	return 0;
 }
 
@@ -3071,25 +3133,93 @@ static void sdi_chip_reset(struct tbs_pcie_dev *dev,int sdi_base_addr)
 }
 
 void channelprocess(struct tbs_pcie_dev *dev,u8 index){
-		struct mod_channel *pchannel = (struct mod_channel *)&dev->channel[index];
-		int count = 0;
-		int ret;
-		u32 delay;
-		//TBS_PCIE_READ((DMA_BASEADDRESS(dev->cardid, pchannel->channel_index)), 0x00);
-		spin_lock(&pchannel->adap_lock);
-		TBS_PCIE_READ((DMA_BASEADDRESS(dev->cardid, pchannel->channel_index)), 0x00);
-		if(dev->cardid != 0x6032)
-			TBS_PCIE_WRITE(Int_adapter, 0x00, (0x10<<index) );
+	struct mod_channel *pchannel = (struct mod_channel *)&dev->channel[index];
+	int count = 0;
+	int ret;
+	u32 delay;
+	u32 iNum;
+	u32 iNext;
+	u32 block_num = 0;
+	unsigned long flags;
+	//TBS_PCIE_READ((DMA_BASEADDRESS(dev->cardid, pchannel->channel_index)), 0x00);
+	spin_lock_irqsave(&pchannel->adap_lock,flags);
+		
+	TBS_PCIE_READ((DMA_BASEADDRESS(dev->cardid, pchannel->channel_index)), 0x00);
+	TBS_PCIE_WRITE(Int_adapter, 0x00, (0x10<<index) );
+		
+	if((dev->cardid == 0x6032)||(dev->cardid == 0x6001))
+	{
+		while(1){
+		count = kfifo_len(&pchannel->fifo);
+		if (count >= CELLSIZE){
+		
+			iNum = TBS_PCIE_READ((DMA_BASEADDRESS(dev->cardid, pchannel->channel_index)), 0x50);
+			if(iNum == 0xffffffff){
+				printk("erroriNum %ld\n",iNum);
+			}
+			if(iNum > DMATOTAL){
+				//printk("iNum_v %ld\n",iNum);
+				iNext = 0;
+			}
+			else { 
+				iNext = DMATOTAL - iNum;
+			}
+			//printk("DMATOTAL, iNext,iNum %ld,%ld,%ld\n",DMATOTAL,iNext,iNum);
+			if(iNext > CELLSIZE){
+				block_num = 1;
+				ret = kfifo_out(&pchannel->fifo, ((void *)pchannel->dmavirt + 	pchannel->dma_num*CELLSIZE ), CELLSIZE); 
+				if(pchannel->dma_num>14)
+					pchannel->dma_num=0;
+				else
+					pchannel->dma_num +=1;
+
+				TBS_PCIE_WRITE((DMA_BASEADDRESS(dev->cardid, pchannel->channel_index)),0x50,CELLSIZE);
+			}
+			else {
+				break;
+			}
+					
+		}
+		else if(block_num == 0){
+			//printk("dma%d status 22 %d\n", pchannel->channel_index, count);
+			if (pchannel->dma_start_flag == 0){
+				spin_unlock(&pchannel->adap_lock);
+				return ;
+			}
+		
+		/* PikoTV 20200306 */
+		if (pchannel->input_bitrate > PIKOTV_MBKB_THRESHOLD)
+		{
+			// Kbit
+			delay = div_u64(1000000000ULL * CELLSIZE, (pchannel->input_bitrate) * 1024*3);
+		}
+		else
+		{
+			// Mbit
+			delay = div_u64(1000000000ULL * CELLSIZE, (pchannel->input_bitrate) * 1024*1024*3);
+		}
+		//printk("%s 0x18 delayshort: %d \n", __func__,delay);
+		TBS_PCIE_WRITE((DMA_BASEADDRESS(dev->cardid, pchannel->channel_index)), DMA_DELAYSHORT, (delay));
+		//TBS_PCIE_WRITE(Int_adapter, 0x04, 0x00000001);
+		}
+		break;
+		
+	}
+	
+	}
+	else
+	{
 		//TBS_PCIE_WRITE(Int_adapter, 0x18+pchannel->channel_index*4, (0));
 		count = kfifo_len(&pchannel->fifo);
 		if (count >= BLOCKSIZE(dev->cardid)){
 			//printk("dma%d status 11 %d\n",pchannel->channel_index,count);
 			ret = kfifo_out(&pchannel->fifo, ((void *)(pchannel->dmavirt) ), BLOCKSIZE(dev->cardid)); 
-			start_dma_transfer(pchannel);
+			//start_dma_transfer(pchannel);
+			TBS_PCIE_WRITE((DMA_BASEADDRESS(dev->cardid, pchannel->channel_index)), DMA_GO, (1));
 		}else{
 			//printk("dma%d status 22 %d\n", pchannel->channel_index, count);
 			if (pchannel->dma_start_flag == 0){
-				spin_unlock(&pchannel->adap_lock);
+				spin_unlock_irqrestore(&pchannel->adap_lock,flags);
 				return ;
 			}
 		
@@ -3108,7 +3238,8 @@ void channelprocess(struct tbs_pcie_dev *dev,u8 index){
 		TBS_PCIE_WRITE((DMA_BASEADDRESS(dev->cardid, pchannel->channel_index)), DMA_DELAYSHORT, (delay));
 		//TBS_PCIE_WRITE(Int_adapter, 0x04, 0x00000001);
 		}
-		spin_unlock(&pchannel->adap_lock);
+	}
+	spin_unlock_irqrestore(&pchannel->adap_lock,flags);
 }
 
 static irqreturn_t tbsmod_irq(int irq, void *dev_id)
@@ -3122,9 +3253,9 @@ static irqreturn_t tbsmod_irq(int irq, void *dev_id)
 		stat16 = TBS_PCIE_READ(Int_adapter, 0x18);
 	else
 		stat16 = 0;
-	TBS_PCIE_WRITE(Int_adapter, 0x04, 0x00000001);
+	//TBS_PCIE_WRITE(Int_adapter, 0x04, 0x00000001);
 
-
+//printk("%s irq(0-15)---- %x,irq(16-31)---- %x \n", __func__,stat,stat16);
 	if((stat == 0x0) && (stat16 == 0x0))
 
 	{	
@@ -3259,7 +3390,7 @@ static irqreturn_t tbsmod_irq(int irq, void *dev_id)
 		}
 	}
 
-	//TBS_PCIE_WRITE(Int_adapter, 0x04, 0x00000001);
+	TBS_PCIE_WRITE(Int_adapter, 0x04, 0x00000001);  // enable int 
 
 	return IRQ_HANDLED;
 }
@@ -3276,7 +3407,7 @@ static void tbsmod_remove(struct pci_dev *pdev)
 		kfifo_free(&dev->channel[i].fifo);
 //		device_destroy(mod_cdev_class, dev->channel[i].devno);
 		if (dev->channel[i].dmavirt){
-			dma_free_coherent(&dev->pdev->dev, DMASIZE, dev->channel[i].dmavirt, dev->channel[i].dmaphy);
+			dma_free_coherent(&dev->pdev->dev, DMATOTAL, dev->channel[i].dmavirt, dev->channel[i].dmaphy);
 			dev->channel[i].dmavirt = NULL;
 		}
 	}
@@ -3435,6 +3566,10 @@ static int tbsmod_probe(struct pci_dev *pdev,
 	case 0x6034:
 		dev->cardid = 0x6034; 
 	break;
+	case 0x6001:
+		dev->cardid = 0x6001; 
+		dev->mods_num = 1;
+	break;
 	case 0x6032:
 		dev->cardid = 0x6032; 
 		if(pdev->subsystem_device == 0x0008)
@@ -3454,7 +3589,7 @@ static int tbsmod_probe(struct pci_dev *pdev,
 	}
 
 	for(i=0;i<dev->mods_num;i++){
-		dev->channel[i].dmavirt = dma_alloc_coherent(&dev->pdev->dev, DMASIZE, &dev->channel[i].dmaphy, GFP_KERNEL);
+		dev->channel[i].dmavirt = dma_alloc_coherent(&dev->pdev->dev, DMATOTAL, &dev->channel[i].dmaphy, GFP_KERNEL);
 		if (!dev->channel[i].dmavirt)
 		{
 			printk(" allocate memory failed\n");
@@ -3462,7 +3597,7 @@ static int tbsmod_probe(struct pci_dev *pdev,
 		}
 		dev->channel[i].channel_index=i;
 		dev->channel[i].dev = dev;
-		if((dev->cardid == 0x6004)||(dev->cardid == 0x6014)||(dev->cardid == 0x6008)||(dev->cardid == 0x6032))
+		if((dev->cardid == 0x6004)||(dev->cardid == 0x6014)||(dev->cardid == 0x6008)||(dev->cardid == 0x6032)||(dev->cardid == 0x6001))
 			dev->channel[i].input_bitrate = 40;
 		else if(dev->cardid == 0x6104)
 			dev->channel[i].input_bitrate = 30;
@@ -3479,6 +3614,20 @@ static int tbsmod_probe(struct pci_dev *pdev,
 		ret = kfifo_alloc(&dev->channel[i].fifo, FIFOSIZE, GFP_KERNEL);
 		if (ret != 0)
 			goto fail3;
+		
+		if((dev->cardid == 0x6032)||(dev->cardid == 0x6001))
+		{	
+			TBS_PCIE_WRITE((DMA_BASEADDRESS(dev->cardid, i)), DMA_SIZE_TOTAL, DMATOTAL);
+			TBS_PCIE_WRITE((DMA_BASEADDRESS(dev->cardid, i)), DMA_ADDR_CELL, CELLSIZE);
+		}
+		else
+		{
+			TBS_PCIE_WRITE((DMA_BASEADDRESS(dev->cardid, i)), DMA_SIZE, (BLOCKSIZE(dev->cardid)));
+		}
+		TBS_PCIE_WRITE((DMA_BASEADDRESS(dev->cardid, i)), DMA_ADDR_HIGH, 0);
+		TBS_PCIE_WRITE((DMA_BASEADDRESS(dev->cardid, i)), DMA_ADDR_LOW, dev->channel[i].dmaphy);
+
+		TBS_PCIE_WRITE(Int_adapter, 0x18+i*4, (1));
 	}
 
 	dev->modulation =QAM_256;
@@ -3563,6 +3712,12 @@ static int tbsmod_probe(struct pci_dev *pdev,
 		mutex_unlock(&dev->chip_lock);
 	break;
 
+	case 0x6001:
+		mutex_lock(&dev->chip_lock);
+		printk("tbsmod%d:tbs6001 dvbc card!\n", dev->mod_index);
+		mutex_unlock(&dev->chip_lock);
+	break;
+
 	default:
 		printk("unknow card\n");
 	}
@@ -3605,6 +3760,7 @@ static const struct pci_device_id tbsmod_id_table[] = {
 	MAKE_ENTRY(0x544d, 0x6178, 0x6214, 0x0001, "tbs6214 isdtb card"),
 	MAKE_ENTRY(0x544d, 0x6178, 0x6034, 0x0001, "tbs6034 atsc card"),
 	MAKE_ENTRY(0x544d, 0x6178, 0x6032, PCI_ANY_ID, "tbs6032 dvbc card"),
+	MAKE_ENTRY(0x544d, 0x6178, 0x6001, 0x0002, "tbs6001 dvbc card"),
 	{}};
 MODULE_DEVICE_TABLE(pci, tbsmod_id_table);
 

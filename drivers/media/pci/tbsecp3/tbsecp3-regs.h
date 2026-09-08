@@ -24,7 +24,7 @@
 #define TBSECP3_GPIO_PIN(_bank, _pin)	(((_bank) << 5) + _pin)
 
 /* I2C */
-#define TBSECP3_I2C_BASE(_n)	(0x4000 + 0x1000 * _n)
+#define TBSECP3_I2C_BASE(_n)	(_n<4)?(0x4000 + 0x1000 * _n):(0x4800 + 0x1000 * (_n-4))
 #define TBSECP3_I2C_STAT	0x0000
 #define TBSECP3_I2C_CTRL	0x0000
 #define TBSECP3_I2C_DATA	0x0004
@@ -44,13 +44,32 @@
 #define TBSECP3_DMA_ADDRL	0x000c
 #define TBSECP3_DMA_BSIZE	0x0010
 
+/*write dma*/
+#define TBS_WRDMA_BASE(_n)  (0x8100+0x1000*_n)  //0x8100
+#define TBS_WRDMA_IE(_n) 	(0x38+4*_n)	//0x38
+/*read dma*/
+#define TBS_RDDMA_BASE(_n) (0xa100+0x1000*_n) //0xa100
+#define TBS_RDDMA_IE(_n)     (0x40+4*_n)  //0x40
+/*SEC*/
+#define DMA_GO	        0x00
+#define DMA_SIZE		0x04
+#define DMA_ADDR_HIGH	0x08
+#define DMA_ADDR_LOW	0x0c
+#define DMA_DELAY		0x14
+#define DMA_DELAYSHORT	0x18
+#define DMA_SPEED_CTRL	0x20
+#define DMA_INT_MONITOR 0x1c
+#define DMA_FRAME_CNT	0x24
+
 /* INTR */
 #define TBSECP3_INT_BASE	0xc000
 #define TBSECP3_INT_STAT	0x0000
 #define TBSECP3_INT_EN		0x0004
 #define TBSECP3_I2C_IE(_n)	(0x0008 + 4 * _n)
+#define TBSECP3_I2C_IE1(_n)	(0x009C + 4 * (_n-4)) //i2c4~7
 #define TBSECP3_DMA_IE(_n)	(0x0018 + 4 * _n)
-#define TBSECP3_I2C_IF(_n)	(0x0001 << _n)
+#define TBSECP3_I2C_IF(_n)	(0x0001 << _n)		//for i2c0~3
+#define TBSECP3_I2C_IF1(_n)	(0x10000000 << (_n-4)) //for i2c4~7
 #define TBSECP3_DMA_IF(_n)	(0x0010 << _n)
 
 //spi flash
