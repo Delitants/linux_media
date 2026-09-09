@@ -29,6 +29,7 @@
 #include <linux/firmware.h>
 #include <linux/i2c.h>
 #include <linux/version.h>
+#include <linux/ratelimit.h>
 #include <asm/div64.h>
 
 #include <media/dvb_frontend.h>
@@ -62,6 +63,10 @@ MODULE_PARM_DESC(bbframe, "BBFrame L3 encapsulation for GCS, GSE-HEM (default:of
 static unsigned int timeout=5;
 module_param(timeout, int, 0644);
 MODULE_PARM_DESC(timeout, "Timeout for signal statistic retrieve 1-20 sec (default:5 sec)");
+
+static bool shared_rf_debug;
+module_param(shared_rf_debug, bool, 0644);
+MODULE_PARM_DESC(shared_rf_debug, "Rate-limited shared RF gain decisions (default:off)");
 
 struct stv_base {
 	struct list_head     stvlist;
@@ -473,6 +478,17 @@ static int stid135_set_parameters(struct dvb_frontend *fe)
 	p->pre_bit_count.stat[0].scale = FE_SCALE_NOT_AVAILABLE;
 
 	err |= fe_stid135_search(state->base->handle, state->nr + 1, &search_params, &search_results, 0);
+	if (shared_rf_debug) {
+		struct fe_stid135_gain_state *gain = &p_params->gain_state[state->nr];
+		static const char * const actions[] = {
+			"unchecked", "unchanged", "deferred", "changed", "error",
+		};
+
+		dev_info_ratelimited(&state->base->i2c->dev,
+			"shared-rf demod=%d rf=%u phase=acquire old=%d requested=%d agc=0x%x protected=0x%02x decision=%s error=%d\n",
+			state->nr + 1, gain->rf, gain->old_mode, gain->requested_mode,
+			gain->agc, gain->protected_mask, actions[gain->action], err);
+	}
 
 	if (err != FE_LLA_NO_ERROR)
 	{

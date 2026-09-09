@@ -8,6 +8,7 @@ Run from the source tree root with Python 3, a C11 compiler and pthreads:
 
 ```sh
 python3 drivers/media/dvb-frontends/stid135/tests/shared_rf.py
+python3 drivers/media/dvb-frontends/stid135/tests/shared_gain.py
 ```
 
 `CC` and `CFLAGS` are supported. Optional sanitizer checks:
@@ -97,3 +98,42 @@ attachment/lifetime serialization is assumed; this does not redesign the
 global base list. Board-specific voltage/power behavior and external changes
 to hardware are not inferred by the readiness flag. Shared SEC voltage/tone,
 DiSEqC commands and Unicable protocol arbitration remain separate limitations.
+
+## Gain isolation tests
+
+`shared_gain.py` executes the complete real `fe_stid135_search`,
+`FE_STiD135_Algo`, `FE_STiD135_GetDemodLock`, RF-path getter, gain policy and
+chip field-access bodies. Unrelated signal-processing routines and hardware
+I/O are stubbed; actual register maps/constants and driver structures are used.
+The 15 named cases contain threshold matrices across all four RF inputs and
+1,344 reception combinations across requester/sibling pairs, gain directions
+and live states, plus other-RF independence,
+stale-cache rejection, recovering DVB-S reception, checked RF bounds, aborts,
+I2C failures, error/timeout cleanup and diagnostic records.
+
+The lock-wait stub deterministically schedules a second real search during
+the first search's **actual mutex-release window**. It verifies same-RF
+protection, different-RF independence, rejection of duplicate-demod searches
+and survival/cleanup of the first reservation. This is a controlled interleaving,
+not a pthread stress test or a claim to model all kernel scheduling behavior.
+The gain byte preserves the other RF gain and differential-input bits. Errors
+at gain/routing/AGC/status reads must result in no gain write. Acquisition errors
+must propagate rather than being overwritten with apparent success.
+
+One RF-bounds case calls the actual policy directly; invalid RF routing cannot
+be encoded in the hardware's two-bit selector. Diagnostic tests validate the
+decision record, not the kernel's logging/rate-limiter implementation.
+
+`CC`, `CFLAGS`, individual case names and `--source-dir` also work here. On the
+unpatched source the runner additionally tolerates the existing Oxford getter's
+unused error accumulator; patched policy tests compile without that waiver.
+The initial unpatched run failed the live-sibling, overlapping-acquisition and
+read/error-propagation assertions while exclusive hysteresis tests passed.
+
+```sh
+CFLAGS='-fsanitize=address,undefined -fno-omit-frame-pointer -g' \
+  python3 drivers/media/dvb-frontends/stid135/tests/shared_gain.py
+```
+
+See [the gain-fix guide](../SHARED-RF-GAIN.md) for hardware validation and the
+intentional sensitivity/headroom trade-off. No DVB device is opened by tests.

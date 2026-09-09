@@ -224,6 +224,22 @@ struct mc_array_customer {
 	s16 snr;
 };
 
+enum fe_stid135_gain_action {
+	FE_GAIN_UNCHECKED,
+	FE_GAIN_UNCHANGED,
+	FE_GAIN_DEFERRED,
+	FE_GAIN_CHANGED,
+	FE_GAIN_ERROR,
+};
+
+struct fe_stid135_gain_state {
+	u32 agc;
+	u8 rf;
+	s8 old_mode, requested_mode;
+	u8 protected_mask;
+	enum fe_stid135_gain_action action;
+};
+
 struct fe_stid135_internal_param {
 	stchip_handle_t handle_demod; /*  Handle to a demodulator */
 	stchip_handle_t handle_anafe; /*  Handle to AFE */
@@ -273,6 +289,9 @@ struct fe_stid135_internal_param {
 	BOOL 				mis_mode[8]; /* Memorisation of MIS mode */
 
 	struct mutex *master_lock;
+	/* Protected by master_lock, including across acquisition wait unlocks. */
+	u8 acquiring_demods;
+	struct fe_stid135_gain_state gain_state[8];
 };
 
 

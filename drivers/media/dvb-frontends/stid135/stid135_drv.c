@@ -38,6 +38,7 @@
 #include "stid135_initLLA_cut2.h"
 #include "c8codew_addr_map.h"
 #include "stid135_addr_map.h"
+#include "oxford_anafe_init.h"
 
 #define DmdLock_TIMEOUT_LIMIT      5500  // Fixed issue BZ#86598
 //#define BLIND_SEARCH_AGC2BANDWIDTH  40
@@ -2387,11 +2388,23 @@ fe_lla_error_t	fe_stid135_search(fe_stid135_handle_t handle, enum fe_stid135_dem
 	if (handle == NULL)
 		return FE_LLA_INVALID_HANDLE;
 
+	if (!pSearch || !pResult || demod < FE_SAT_DEMOD_1 ||
+	    demod > FE_SAT_DEMOD_8)
+		return FE_LLA_BAD_PARAMETER;
+
+	pResult->locked = FALSE;
+
+	pParams = (struct fe_stid135_internal_param *) handle;
+
+	if (pParams->acquiring_demods & (1U << (demod - 1)))
+		return FE_LLA_BAD_PARAMETER;
+	pParams->gain_state[demod - 1] = (struct fe_stid135_gain_state) {
+		.old_mode = -1, .requested_mode = -1,
+	};
+
 	if ((!(INRANGE(100000, pSearch->symbol_rate,  520000000))) ||
 		  (!(INRANGE(500000, pSearch->search_range, 70000000))))
 		return FE_LLA_BAD_PARAMETER;
-
-	pParams = (struct fe_stid135_internal_param *) handle;
 
 	if (pParams->handle_demod->Error)
 		return FE_LLA_I2C_ERROR;
@@ -2488,7 +2501,14 @@ fe_lla_error_t	fe_stid135_search(fe_stid135_handle_t handle, enum fe_stid135_dem
 			}
 	}
 
+	if (error != FE_LLA_NO_ERROR)
+		return error;
+	/* GetDemodLock drops master_lock while waiting; keep this reservation. */
+	pParams->acquiring_demods |= 1U << (demod - 1);
 	error |= FE_STiD135_Algo(pParams, demod, satellitte_scan, &signalType);
+	pParams->acquiring_demods &= ~(1U << (demod - 1));
+	if (error != FE_LLA_NO_ERROR)
+		return error;
 	pSearch->tuner_index_jump = pParams->tuner_index_jump[demod-1];
 
 	if (signalType == FE_SAT_TUNER_JUMP) {
@@ -3581,6 +3601,81 @@ static fe_lla_error_t fe_stid135_manage_LNF_IP3 (stchip_handle_t demod_handle, F
         return (fe_lla_error_t)error;
 }
 
+/* A VGLNA gain bit belongs to an RF input, not to the demod being tuned. */
+static fe_lla_error_t fe_stid135_manage_shared_gain(
+		struct fe_stid135_internal_param *pParams,
+		enum fe_stid135_demod demod, s32 rf, u32 agc)
+{
+	stchip_handle_t chip = pParams->handle_demod;
+	struct fe_stid135_gain_state *gain = &pParams->gain_state[demod - 1];
+	u32 value = 0, mask;
+	s32 sibling_rf, locked, header;
+	enum fe_stid135_demod sibling;
+
+	gain->rf = rf;
+	gain->agc = agc;
+	gain->action = FE_GAIN_ERROR;
+	if (rf < AFE_TUNER1 || rf > AFE_TUNER4)
+		return FE_LLA_BAD_PARAMETER;
+	if (chip->Error || chip->Abort)
+		return FE_LLA_I2C_ERROR;
+	if (ChipGetOneRegister(chip, RAFE_RF_CFG1, &value))
+		return FE_LLA_I2C_ERROR;
+
+	mask = 1U << (rf - 1);
+	gain->old_mode = !!(value & mask);
+	gain->requested_mode = gain->old_mode;
+	if (gain->old_mode && agc > LNF_IP3_SWITCH_HIGH)
+		gain->requested_mode = MODE_IP3;
+	else if (!gain->old_mode && agc < LNF_IP3_SWITCH_LOW)
+		gain->requested_mode = MODE_LNF;
+	if (gain->old_mode == gain->requested_mode) {
+		gain->action = FE_GAIN_UNCHANGED;
+		return FE_LLA_NO_ERROR;
+	}
+
+	for (sibling = FE_SAT_DEMOD_1; sibling <= FE_SAT_DEMOD_8; sibling++) {
+		if (sibling == demod)
+			continue;
+		sibling_rf = 0;
+		if (fe_stid135_get_agcrf_path(chip, sibling, &sibling_rf) ||
+		    chip->Error || sibling_rf < AFE_TUNER1 || sibling_rf > AFE_TUNER4)
+			return FE_LLA_I2C_ERROR;
+		if (sibling_rf != rf)
+			continue;
+		if (pParams->acquiring_demods & (1U << (sibling - 1))) {
+			gain->protected_mask |= 1U << (sibling - 1);
+			continue;
+		}
+		/* Live state, not stale search results or retained frontend owners.
+		 * Keep a found carrier protected even during a temporary FEC/TS loss.
+		 */
+		if (ChipGetField(chip,
+		    FLD_FC8CODEW_DVBSX_DEMOD_DSTATUS_LOCK_DEFINITIF(sibling), &locked) ||
+		    chip->Error)
+			return FE_LLA_I2C_ERROR;
+		if (ChipGetField(chip,
+		    FLD_FC8CODEW_DVBSX_DEMOD_DMDSTATE_HEADER_MODE(sibling), &header) ||
+		    chip->Error)
+			return FE_LLA_I2C_ERROR;
+		if (locked || header == FE_SAT_DVBS2_FOUND || header == FE_SAT_DVBS_FOUND)
+			gain->protected_mask |= 1U << (sibling - 1);
+	}
+	if (gain->protected_mask) {
+		gain->action = FE_GAIN_DEFERRED;
+		return FE_LLA_NO_ERROR;
+	}
+
+	/* Do not use ChipSetField here: its legacy RMW can write after a failed
+	 * read. master_lock has remained held since the checked byte read.
+	 */
+	value = (value & ~mask) | (gain->requested_mode ? mask : 0);
+	if (ChipSetOneRegister(chip, RAFE_RF_CFG1, value))
+		return FE_LLA_I2C_ERROR;
+	gain->action = FE_GAIN_CHANGED;
+	return FE_LLA_NO_ERROR;
+}
+
 
 /*****************************************************
 --FUNCTION	::	FE_STiD135_Algo
@@ -3607,7 +3702,7 @@ fe_lla_error_t FE_STiD135_Algo(struct fe_stid135_internal_param *pParams,
 	#endif
 	u32 streamMergerField;
 	u16 pdel_status_timeout = 0;
-	s32 AgcrfPath;
+	s32 AgcrfPath = 0;
 	
 	BOOL lock = FALSE;
 	
@@ -3644,17 +3739,24 @@ fe_lla_error_t FE_STiD135_Algo(struct fe_stid135_internal_param *pParams,
 	/* Read PowerI and PowerQ To check the signal Presence */
 	
 	error |= fe_stid135_get_agcrf_path(pParams->handle_demod, Demod, &AgcrfPath);
+	if (error || pParams->handle_demod->Error || pParams->handle_demod->Abort ||
+	    AgcrfPath < AFE_TUNER1 || AgcrfPath > AFE_TUNER4)
+		return FE_LLA_I2C_ERROR;
 
 	ChipWaitOrAbort(pParams->handle_demod, 10);
 	
 	error |= ChipGetRegisters(pParams->handle_demod, (u16)REG_RC8CODEW_DVBSX_AGCRF_AGCRFIN1(AgcrfPath), 2);
+	if (error || pParams->handle_demod->Error || pParams->handle_demod->Abort)
+		return FE_LLA_I2C_ERROR;
 	
 	agc1Power=MAKEWORD16(ChipGetFieldImage(pParams->handle_demod, 
 		FLD_FC8CODEW_DVBSX_AGCRF_AGCRFIN1_AGCRF_VALUE(AgcrfPath)),
 		ChipGetFieldImage(pParams->handle_demod, 
 		FLD_FC8CODEW_DVBSX_AGCRF_AGCRFIN0_AGCRF_VALUE(AgcrfPath)));
 		
-	error |= fe_stid135_manage_LNF_IP3(pParams->handle_demod, AgcrfPath, (u32)agc1Power);
+	error = fe_stid135_manage_shared_gain(pParams, Demod, AgcrfPath, (u32)agc1Power);
+	if (error != FE_LLA_NO_ERROR)
+		return error;
 	
 	iqPower = 0;
 			

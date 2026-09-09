@@ -1,5 +1,10 @@
 # Latest TBS stack with the STiD135 shared-RF fix
 
+This document records the initial matched-stack upgrade. The subsequent
+[gain-isolation patch](SHARED-RF-GAIN.md) builds on that stack; its source,
+single-module upgrade procedure and pending hardware validation are documented
+separately. The code pin below intentionally reproduces the earlier upgrade.
+
 Upstream checked: **2026-09-08 UTC**. Linux kernel upgrades, firmware changes,
 driver reloads, and reboots are separate operator decisions.
 
